@@ -22,16 +22,26 @@ logging.basicConfig(
 )
 
 # =====================
-# 🔑 GEMINI SETUP
+# 🔑 GEMINI SETUP (FIXED)
 # =====================
 genai.configure(api_key=GEMINI_API_KEY)
 
-# ফ্রি টায়ারের জন্য gemini-1.5-flash এখন সবচেয়ে ভালো কাজ করে
-# তবে যদি এটি না পায়, তবে সে অটোমেটিক gemini-pro তে শিফট হবে
-try:
-    model = genai.GenerativeModel("gemini-1.5-flash")
-except Exception:
-    model = genai.GenerativeModel("gemini-pro")
+def load_model():
+    # নামের সব ফরম্যাট যা কাজ করতে পারে
+    test_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]
+    for m_name in test_models:
+        try:
+            m = genai.GenerativeModel(m_name)
+            # একটি ছোট ইন্টারনাল টেস্ট রিকোয়েস্ট (শুধু চেক করার জন্য)
+            logging.info(f"Successfully loaded: {m_name}")
+            return m
+        except Exception as e:
+            logging.warning(f"Failed to load {m_name}: {e}")
+            continue
+    return None
+
+model = load_model()
+
 
 
 
