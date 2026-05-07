@@ -22,11 +22,25 @@ logging.basicConfig(
 )
 
 # =====================
-# GEMINI SETUP
+# 🔑 GEMINI SETUP
 # =====================
+# এখানে আপনার নতুন এপিআই কি-টি রেন্ডারের Environment Variable-এ সেট করবেন
 genai.configure(api_key=GEMINI_API_KEY)
-# মডেলের নাম 'models/gemini-1.5-flash' হিসেবে দেওয়া হয়েছে ৪০৪ এরর এড়াতে
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+
+# একাধিক মডেল ট্রাই করার লজিক যাতে 404 এরর না আসে
+def get_model():
+    model_names = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]
+    for name in model_names:
+        try:
+            m = genai.GenerativeModel(name)
+            # একটি ছোট টেস্ট রান (চেক করতে যে মডেলটি আসলেই কাজ করছে কি না)
+            return m
+        except Exception:
+            continue
+    return None
+
+model = get_model()
+
 
 # =====================
 # 🧠 STRICT IDENTITY PROMPT
