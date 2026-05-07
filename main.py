@@ -19,32 +19,32 @@ logging.basicConfig(
 )
 
 # =====================
-# 🌐 RENDER PORT FIX (Web Service-এর জন্য)
+# 🌐 RENDER PORT FIX
 # =====================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Riyad Assistant is Running on Groq!")
+        self.wfile.write(b"Riyad Assistant is Live and Updated!")
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logging.info(f"Health check server started on port {port}")
     server.serve_forever()
 
 # =====================
 # 🚀 GROQ SETUP
 # =====================
-# Groq Client Initialize
 client = Groq(api_key=GROQ_API_KEY)
 
+# তোমার দেওয়া স্পেশাল ইনফরমেশন এখানে অ্যাড করা হয়েছে
 SYSTEM_PROMPT = """
 You are Riyad Assistant. 
-- Creator: Riyad.
-- Language: Banglish (Mix of Bangla and English).
-- Style: Friendly, short, and helpful.
-- Rule: Never mention you are a model from Groq or Google.
+- Created By: Abu Bakr Riad.
+- Birthday: May 7, 2026 (Ajkker din e tumi jonmo niyecho).
+- Personality: Very friendly, helpful, and funny.
+- Language: Strictly Banglish (Bangla + English mix).
+- Rule: If someone asks when you were created, say you were born on May 7, 2026, by Riyad.
 """
 
 # =====================
@@ -53,7 +53,6 @@ You are Riyad Assistant.
 async def ask_groq(user_text):
     try:
         loop = asyncio.get_event_loop()
-        # Synchronous Groq call-কে Asynchronous করার জন্য run_in_executor ব্যবহার করা হয়েছে
         completion = await loop.run_in_executor(
             None, 
             lambda: client.chat.completions.create(
@@ -62,33 +61,27 @@ async def ask_groq(user_text):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_text}
                 ],
-                temperature=0.7,
+                temperature=0.8,
                 max_tokens=500
             )
         )
         return completion.choices[0].message.content
     except Exception as e:
-        logging.error(f"Groq API Error: {e}")
-        return "Sorry dost, server-e ektu jhamela hocche. Ektu por try koro! 😅"
+        logging.error(f"Error: {e}")
+        return "Sorry dost, brain-e ektu short circuit hoyeche. 😅 Abar bolo?"
 
 # =====================
 # 🚀 TELEGRAM HANDLERS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = "👋 Hello! Ami Riyad Assistant.\nGroq API diye ekhon ami aro fast! Ki sahayyo korte pari?"
+    welcome = "👋 Hello! Ami Riyad Assistant.\nAajker din-e (7 May 2026) amar jonmo hoyeche! 🎂\nKi sahayyo korte pari?"
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text(welcome_text, reply_markup=menu)
+    await update.message.reply_text(welcome, reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    
-    # "Typing..." স্ট্যাটাস দেখানোর জন্য
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
-    # AI থেকে উত্তর নেওয়া
     ai_reply = await ask_groq(user_text)
-    
-    # উত্তর পাঠানো
     await update.message.reply_text(ai_reply)
 
 # =====================
@@ -96,30 +89,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================
 async def main():
     if not BOT_TOKEN or not GROQ_API_KEY:
-        logging.error("Environment Variables (BOT_TOKEN/GROQ_API_KEY) missing!")
+        logging.error("Tokens are missing!")
         return
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Handlers যোগ করা
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    logging.info("Riyad Assistant (Groq) is starting...")
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        # বটকে সচল রাখার জন্য
         await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    # ১. Render-এর পোর্ট এরর দূর করতে আলাদা থ্রেডে সার্ভার চালানো
     threading.Thread(target=run_health_check, daemon=True).start()
-    
-    # ২. টেলিগ্রাম বট চালু করা
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot Stopped!")
+        pass
