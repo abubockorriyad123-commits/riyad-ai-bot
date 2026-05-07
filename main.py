@@ -13,10 +13,25 @@ from groq import Groq
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# =====================
+# 🧠 MEMORY SYSTEM (Short-term)
+# =====================
+# প্রতিটা ইউজারের জন্য আলাদা আলাদা হিস্ট্রি সেভ থাকবে
+user_histories = {}
+
+def get_history(user_id):
+    if user_id not in user_histories:
+        user_histories[user_id] = []
+    return user_histories[user_id]
+
+def update_history(user_id, role, content):
+    history = get_history(user_id)
+    history.append({"role": role, "content": content})
+    # শুধু শেষ ১০টি মেসেজ মনে রাখবে যাতে মেমোরি ফুল না হয়
+    if len(history) > 10:
+        history.pop(0)
 
 # =====================
 # 🌐 RENDER PORT FIX
@@ -25,7 +40,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Riyad Assistant is Live and Updated!")
+        self.wfile.write(b"Riyad Assistant is Running with Memory!")
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
@@ -37,67 +52,75 @@ def run_health_check():
 # =====================
 client = Groq(api_key=GROQ_API_KEY)
 
-# তোমার দেওয়া স্পেশাল ইনফরমেশন এখানে অ্যাড করা হয়েছে
 SYSTEM_PROMPT = """
 You are Riyad Assistant. 
-- Personality: Short, casual, and talkative. 
-- Identity Rule: Do NOT introduce yourself or mention Abu Bakr Riad unless the user asks "Who are you?" or "Who created you?".
-- Repetition Rule: Do NOT mention your birthday, date, or your origin in regular chat.
-- Language: Strictly Banglish. 
-- Task: Just reply to the user's last message directly like a human friend.
+- Personality: Short, casual, and friendly. 
+- Identity Rule: Do NOT introduce yourself or mention Abu Bakr Riad unless asked.
+- Memory: You can remember previous messages in this chat. Use that to avoid repeating yourself.
+- Language: Banglish (Mix of Bangla and English).
+- Task: Chat naturally like a friend.
 """
 
-
-
 # =====================
-# 🤖 AI FUNCTION
+# 🤖 AI FUNCTION WITH MEMORY
 # =====================
-async def ask_groq(user_text):
+async def ask_groq(user_id, user_text):
     try:
+        history = get_history(user_id)
+        
+        # মেসেজ লিস্ট তৈরি (System Prompt + History + Current Message)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_text})
+
         loop = asyncio.get_event_loop()
         completion = await loop.run_in_executor(
             None, 
             lambda: client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_text}
-                ],
-                temperature=0.8,
-                max_tokens=500
+                messages=messages,
+                temperature=0.7,
             )
         )
-        return completion.choices[0].message.content
+        
+        reply = completion.choices[0].message.content
+        
+        # হিস্ট্রি আপডেট করা (ইউজার এবং এআই দুজনের কথাই সেভ হবে)
+        update_history(user_id, "user", user_text)
+        update_history(user_id, "assistant", reply)
+        
+        return reply
     except Exception as e:
-        logging.error(f"Error: {e}")
-        return "Sorry dost, brain-e ektu short circuit hoyeche. 😅 Abar bolo?"
+        logging.error(f"Groq Error: {e}")
+        return "Sorry dost, server-e ektu jhamela hocche. 😅"
 
 # =====================
 # 🚀 TELEGRAM HANDLERS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = "👋 Hello! Ami Riyad Assistant.\nAajker din-e (7 May 2026) amar jonmo hoyeche! 🎂\nKi sahayyo korte pari?"
+    user_id = update.effective_user.id
+    user_histories[user_id] = [] # স্টার্ট দিলে মেমোরি রিসেট হবে
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text(welcome, reply_markup=menu)
+    await update.message.reply_text("👋 Hello! Ami Riyad Assistant. Ekhon ami shob mone rakhte pari! Ki obostha?", reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
+    user_id = update.effective_user.id
+    
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    ai_reply = await ask_groq(user_text)
-    await update.message.reply_text(ai_reply)
+    reply = await ask_groq(user_id, user_text)
+    await update.message.reply_text(reply)
 
 # =====================
 # 🚀 MAIN RUNNER
 # =====================
 async def main():
     if not BOT_TOKEN or not GROQ_API_KEY:
-        logging.error("Tokens are missing!")
         return
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    
     async with app:
         await app.initialize()
         await app.start()
