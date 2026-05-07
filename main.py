@@ -28,7 +28,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 def load_model():
     # নামের সব ফরম্যাট যা কাজ করতে পারে
-    test_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]
+    test_models = ["models/gemini-1.5-flash", "gemini-1.5-flash", "gemini-pro"]
     for m_name in test_models:
         try:
             m = genai.GenerativeModel(m_name)
