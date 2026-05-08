@@ -26,7 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_history(user_id):
     try:
-        response = supabase.table("history").select("chat_history").eq("user_id", user_id).execute()
+        response = supabase.table("history").select("chat_history").eq("user_id", str(user_id)).execute()
         if response.data:
             return json.loads(response.data[0]['chat_history'])
         return []
@@ -37,10 +37,9 @@ def get_history(user_id):
 def save_history(user_id, history):
     if len(history) > 20:
         history = history[-20:] 
-    
     try:
         data = {
-            "user_id": user_id,
+            "user_id": str(user_id),
             "chat_history": json.dumps(history)
         }
         supabase.table("history").upsert(data).execute()
@@ -67,12 +66,18 @@ def run_health_check():
 # =====================
 client = Groq(api_key=GROQ_API_KEY)
 
+# ✅ ALL RULES ADDED HERE
 SYSTEM_PROMPT = """
-You are MOJO, a smart and friendly AI assistant created by Abu Bakar Riyad.
+You are MOJO. 
+- Personality: Smart, intelligent, Self learner and friendly. 
 - Identity: MOJO.
+- Creator: Developed by ABU BAKAR RIYAD.
 - Birthday: 7 May 2026.
-- Rules: Speak in Bangla or English. Be helpful and intelligent.
-- Memory: Use past chat history to provide context-aware answers.
+- Rules: 
+  1. Never mention specific AI models (like Llama, Groq) or APIs. 
+  2. Speak in Bangla or English.
+  3. Introduce yourself as MOJO.
+  4. Use past chat history to provide context-aware answers.
 """
 
 async def ask_groq(user_id, user_text):
@@ -105,15 +110,15 @@ async def ask_groq(user_id, user_text):
 # 🤖 TELEGRAM HANDLERS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # বাটন মেনু সেটআপ
     menu = ReplyKeyboardMarkup([
         ["👤 Creator Details", "🤖 Bot Info"]
     ], resize_keyboard=True)
     
     welcome_text = (
         "✨ **MOJO is Online!** ✨\n\n"
-        "আমি **MOJO**, আপনার পার্সোনাল এআই বন্ধু। আমাকে তৈরি করেছেন আবু বকর রিয়াদ।\n\n"
-        "নিচের বাটনগুলো ব্যবহার করে আমার সম্পর্কে আরও জানতে পারেন অথবা সরাসরি চ্যাট শুরু করতে পারেন।"
+        "আমি **MOJO**, আমাকে তৈরি করেছেন **আবু বকর রিয়াদ**। "
+        "আমি একজন স্মার্ট এবং ফ্রেন্ডলি এআই বন্ধু।\n\n"
+        "বলুন, আজ আপনার জন্য কী করতে পারি?"
     )
     await update.message.reply_text(welcome_text, reply_markup=menu, parse_mode="Markdown")
 
@@ -121,19 +126,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.effective_user.id
 
-    # Creator Details লজিক
     if user_text == "👤 Creator Details":
         creator_info = (
             "👤 **Creator Details**\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "**Name:** Abu Bakar Riyad\n"
-            "**WP Number:** 01328446337\n"
+            "**WP:** [01328446337](https://wa.me/8801328446337)\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
-        await update.message.reply_text(creator_info, parse_mode="Markdown")
+        await update.message.reply_text(creator_info, parse_mode="Markdown", disable_web_page_preview=True)
         return
 
-    # Bot Info লজিক
     if user_text == "🤖 Bot Info":
         bot_info = (
             "🤖 **Bot Info**\n"
@@ -147,7 +150,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot_info, parse_mode="Markdown")
         return
     
-    # নরমাল চ্যাট লজিক
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     reply = await ask_groq(user_id, user_text)
     await update.message.reply_text(reply)
