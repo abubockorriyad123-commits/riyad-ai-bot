@@ -95,7 +95,7 @@ async def ask_ai(user_id, user_text):
         completion = await loop.run_in_executor(
             None, 
             lambda: client.chat.completions.create(
-                model="google/gemini-2.0-flash-exp:free", # এখানে ফ্রি মডেল ব্যবহার করা হয়েছে
+                model="ring/ring-2.6-1t:free", # এখানে ফ্রি মডেল ব্যবহার করা হয়েছে
                 messages=messages,
             )
         )
