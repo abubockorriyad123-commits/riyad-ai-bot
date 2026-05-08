@@ -120,7 +120,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     clear_db_history(user_id)
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text("👋 Ami MOJO! Render-e ekhon ami permanent memory niye ready.", reply_markup=menu)
+    await update.message.reply_text("✨ MOJO is Online! ✨", reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
