@@ -1,3 +1,5 @@
 python-telegram-bot==21.6
 groq
 firebase-admin
+duckduckgo-search
+
