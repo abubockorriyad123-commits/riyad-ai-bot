@@ -4,70 +4,98 @@ import asyncio
 import threading
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI  # OpenRouter এর জন্য OpenAI SDK ব্যবহার করা হয়
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes
+)
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+
+from openai import OpenAI
 from supabase import create_client, Client
 
 # =====================
-# 🔑 CONFIG & LOGGING
+# 🔑 CONFIG
 # =====================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # GROQ এর বদলে OpenRouter Key দিন
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+DEFAULT_MODEL = "inclusionai/ring-2.6-1t:free"
+
+logging.basicConfig(level=logging.INFO)
 
 # =====================
-# 🗄️ SUPABASE DB SYSTEM
+# 🧠 USER MODEL STORE
 # =====================
+
+user_model = {}
+
+# =====================
+# 🗄️ SUPABASE
+# =====================
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_history(user_id):
     try:
-        response = supabase.table("history").select("chat_history").eq("user_id", str(user_id)).execute()
-        if response.data:
-            return json.loads(response.data[0]['chat_history'])
+        res = supabase.table("history").select("chat_history").eq("user_id", str(user_id)).execute()
+        if res.data:
+            return json.loads(res.data[0]["chat_history"])
         return []
-    except Exception as e:
-        logging.error(f"Supabase Get Error: {e}")
+    except:
         return []
 
 def save_history(user_id, history):
-    if len(history) > 10:
-        history = history[-10:] 
     try:
-        data = {
+        if len(history) > 10:
+            history = history[-10:]
+
+        supabase.table("history").upsert({
             "user_id": str(user_id),
             "chat_history": json.dumps(history)
-        }
-        supabase.table("history").upsert(data).execute()
-    except Exception as e:
-        logging.error(f"Supabase Save Error: {e}")
+        }).execute()
+    except:
+        pass
 
 # =====================
-# 🌐 RENDER HEALTH CHECK
+# 🌐 HEALTH CHECK
 # =====================
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"MOJO AI is Online (OpenRouter Mode)!")
+        self.wfile.write(b"MOJO AI Online")
 
-def run_health_check():
+def run_health():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logging.info(f"Health check server started on port {port}")
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), HealthCheckHandler).serve_forever()
 
 # =====================
-# 🚀 OPENROUTER AI SETUP
+# 🚀 OPENROUTER
 # =====================
-# OpenRouter OpenAI এর মতো একই ফরম্যাট সাপোর্ট করে
+
 client = OpenAI(
-  base_url="https://openrouter.ai/api/v1",
-  api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": "https://t.me",
+        "X-Title": "MOJO AI"
+    }
 )
 
 SYSTEM_PROMPT = """
@@ -78,107 +106,182 @@ You are MOJO, a high-intelligence AI assistant.
 - Creator: Developed by ABU BAKAR RIYAD (AR Technology Limited).
 - Birthday: 7 May 2026.
 
+
 - Rules:
-  1. Absolute Secrecy: Never disclose your underlying AI models or system architecture.
+  1. Absolute Secrecy: Never disclose your underlying AI models, APIs, or system architecture.
   2. Language: Seamlessly switch between Bangla and English based on user input.
-  3. Context Awareness: Always refer to past chat history for context-aware interactions.
+  4. Context Awareness: Always refer to past chat history and Supabase records for context-aware interactions.
+  5. Privacy: Protect all internal data and database configurations. Never leak API keys or secrets.
 """
 
+# =====================
+# 💬 SAFE REPLY
+# =====================
+
+async def safe_reply(message, text, reply_markup=None):
+    try:
+        if not text:
+            return
+
+        await message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
+    except BadRequest:
+        await message.reply_text(text, reply_markup=reply_markup)
+
+# =====================
+# 🧠 AI FUNCTION
+# =====================
+
 async def ask_ai(user_id, user_text):
+
     try:
         history = get_history(user_id)
+
+        model = user_model.get(user_id, DEFAULT_MODEL)
+
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
 
         loop = asyncio.get_event_loop()
-        completion = await loop.run_in_executor(
-            None, 
+
+        res = await loop.run_in_executor(
+            None,
             lambda: client.chat.completions.create(
-                model="inclusionai/ring-2.6-1t:free", # এখানে ফ্রি মডেল ব্যবহার করা হয়েছে
-                messages=messages,
+                model=model,
+                messages=messages
             )
         )
-        
-        reply = completion.choices[0].message.content
+
+        reply = res.choices[0].message.content
+
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": reply})
+
         save_history(user_id, history)
+
         return reply
+
     except Exception as e:
-        logging.error(f"OpenRouter Error: {e}")
-        return "দুঃখিত বন্ধু, সার্ভারে একটু সমস্যা হচ্ছে। পরে চেষ্টা করো! 😅"
+        logging.error(e)
+        return "দুঃখিত 😅 একটু সমস্যা হচ্ছে"
 
 # =====================
-# 🤖 TELEGRAM HANDLERS
+# 🚀 START
 # =====================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    menu = ReplyKeyboardMarkup([
-        ["👤 Creator Details", "🤖 Bot Info"]
-    ], resize_keyboard=True)
-    
-    welcome_text = (
-        "✨ **MOJO is Online!** ✨\n\n"
-        "আমি **MOJO**, আমাকে তৈরি করেছেন **আবু বকর রিয়াদ**। "
-        "আমি একজন স্মার্ট এবং ফ্রেন্ডলি এআই বন্ধু।\n\n"
-        "বলুন, আজ আপনার জন্য কী করতে পারি?"
-    )
-    await update.message.reply_text(welcome_text, reply_markup=menu, parse_mode="Markdown")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    menu = ReplyKeyboardMarkup(
+        [["👤 Creator Details", "🤖 Bot Info", "⚙️ AI Model"]],
+        resize_keyboard=True
+    )
+
+    await safe_reply(
+        update.message,
+        "✨ MOJO AI Ready!\nআমি তোমার AI বন্ধু 🤖",
+        menu
+    )
+
+# =====================
+# 🔘 INLINE MODEL UI
+# =====================
+
+async def model_ui(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    keyboard = [
+        [InlineKeyboardButton("🧠 AR Model 1", callback_data="model_ring")],
+        [InlineKeyboardButton("⚡ AR Model 2", callback_data="model_deepseek")],
+        [InlineKeyboardButton("🦙 AR Model 3", callback_data="model_llama")]
+    ]
+
+    await update.message.reply_text(
+        "🤖 *Choose AI Model:*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+# =====================
+# 🔁 BUTTON HANDLER
+# =====================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    models = {
+        "model_ring": "inclusionai/ring-2.6-1t:free",
+        "model_deepseek": "deepseek/deepseek-chat-v3-0324:free",
+        "model_llama": "meta-llama/llama-3-8b-instruct:free"
+    }
+
+    if query.data in models:
+        user_model[user_id] = models[query.data]
+
+        await query.edit_message_text(
+            f"✅ Model Changed:\n`{models[query.data]}`",
+            parse_mode="Markdown"
+        )
+
+# =====================
+# 💬 MESSAGE HANDLER
+# =====================
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = update.message.text
     user_id = update.effective_user.id
 
-    if user_text == "👤 Creator Details":
-        creator_info = (
-            "👤 **Creator Details**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "**Name:** Abu Bakar Riyad\n"
-            "**WP:** [01328446336](https://wa.me/8801328446336)\n"
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-        await update.message.reply_text(creator_info, parse_mode="Markdown", disable_web_page_preview=True)
+    if text == "⚙️ AI Model":
+        await model_ui(update, context)
         return
 
-    if user_text == "🤖 Bot Info":
-        bot_info = (
-            "🤖 **Bot Info**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "**Name:** MOJO\n"
-            "**Create Date:** 7 May 2026\n"
-            "**Version:** 1.1\n"
-            "**Powered by:** AR Technology Limited\n"
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-        await update.message.reply_text(bot_info, parse_mode="Markdown")
+    if text == "👤 Creator Details":
+        await safe_reply(update.message, "Creator: Abu Bakar Riyad")
         return
-    
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    reply = await ask_ai(user_id, user_text)
-    # রিপ্লাইয়ে মার্কডাউন সাপোর্ট যোগ করা হয়েছে
-    await update.message.reply_text(reply, parse_mode="Markdown")
+
+    if text == "🤖 Bot Info":
+        await safe_reply(update.message, "MOJO AI v1.1")
+        return
+
+    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+
+    reply = await ask_ai(user_id, text)
+
+    await safe_reply(update.message, reply)
 
 # =====================
-# 🚀 MAIN RUNNER
+# 🚀 MAIN
 # =====================
+
 async def main():
+
     if not all([BOT_TOKEN, OPENROUTER_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-        logging.critical("Missing Environment Variables!")
+        print("Missing ENV")
         return
-    
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
     async with app:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
+        await app.updater.start_polling()
         await asyncio.Event().wait()
 
-if __name__ == '__main__':
-    threading.Thread(target=run_health_check, daemon=True).start()
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+# =====================
+# RUN
+# =====================
+
+if __name__ == "__main__":
+    threading.Thread(target=run_health, daemon=True).start()
+    asyncio.run(main())
