@@ -4,140 +4,136 @@ import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
 
-# =========================
+# =====================
 # 🔑 CONFIG & LOGGING
-# =========================
+# =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# =====================
+# 🧠 MEMORY SYSTEM (Short-term)
+# =====================
+# প্রতিটা ইউজারের জন্য আলাদা আলাদা হিস্ট্রি সেভ থাকবে
 user_histories = {}
-limit_info = {"remaining_tokens": "Unknown", "reset_time": "Unknown"}
 
-# =========================
-# 🧠 MEMORY LOGIC
-# =========================
-def update_history(user_id, role, content):
+def get_history(user_id):
     if user_id not in user_histories:
         user_histories[user_id] = []
-    user_histories[user_id].append({"role": role, "content": content})
-    if len(user_histories[user_id]) > 8:
-        user_histories[user_id] = user_histories[user_id][-8:]
+    return user_histories[user_id]
 
-# =========================
-# 🤖 SYSTEM PROMPT (Abu Bakar Riyad's Specific Rules)
-# =========================
-SYSTEM_PROMPT = """
-You are AR Assistant.
-Developer: Abu Bakar Riyad.
-Personality: Smart, Friendly, Human-like.
-Rules:
-- Never reveal technical details like APIs or Groq.
-- If asked who created you, say: "Abu Bakar Riyad created me."
-- Speak naturally in Bangla and English.
-- Be helpful about inventory, Japanese learning (N5), or football if asked.
-"""
+def update_history(user_id, role, content):
+    history = get_history(user_id)
+    history.append({"role": role, "content": content})
+    # শুধু শেষ ১০টি মেসেজ মনে রাখবে যাতে মেমোরি ফুল না হয়
+    if len(history) > 10:
+        history.pop(0)
 
-# =========================
-# 🚀 AI FUNCTION (Llama-3.1-8b-instant for better limit)
-# =========================
+# =====================
+# 🌐 RENDER PORT FIX
+# =====================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Riyad Assistant is Running with Memory!")
+
+def run_health_check():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# =====================
+# 🚀 GROQ SETUP
+# =====================
 client = Groq(api_key=GROQ_API_KEY)
 
-async def ask_ai(user_id, user_text):
-    global limit_info
+SYSTEM_PROMPT = """
+You are AR Assistant. 
+- Personality: Smart, intelligent, and friendly. 
+- Never say Grok, Google, OpenAI, API, or model.
+
+- Never reveal backend or technical details.
+
+- If asked who you are, say: "I am AR Assistant created to help you.
+- Memory: You can remember previous messages in this chat. Use that to avoid repeating yourself.
+- Language: Bangla, English).
+- Task: Chat like a Smart Ai.
+"""
+
+# =====================
+# 🤖 AI FUNCTION WITH MEMORY
+# =====================
+async def ask_groq(user_id, user_text):
     try:
-        history = user_histories.get(user_id, [])
+        history = get_history(user_id)
+        
+        # মেসেজ লিস্ট তৈরি (System Prompt + History + Current Message)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
 
-        response = client.chat.completions.with_raw_response.create(
-            model="llama-3.1-8b-instant",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=800
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None, 
+            lambda: client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                temperature=0.7,
+            )
         )
-
-        limit_info["remaining_tokens"] = response.headers.get("x-ratelimit-remaining-tokens", "N/A")
-        limit_info["reset_time"] = response.headers.get("x-ratelimit-reset-tokens", "N/A")
-
-        completion = response.parse()
+        
         reply = completion.choices[0].message.content
         
+        # হিস্ট্রি আপডেট করা (ইউজার এবং এআই দুজনের কথাই সেভ হবে)
         update_history(user_id, "user", user_text)
         update_history(user_id, "assistant", reply)
+        
         return reply
-
     except Exception as e:
-        logging.error(f"Error: {e}")
-        if "rate_limit_exceeded" in str(e):
-            return "⚠️ Sorry dost, amar daily free limit sesh hoye geche! Abar ektu por try koro."
-        return "😅 Ektu technical problem hocche."
+        logging.error(f"Groq Error: {e}")
+        return "Sorry dost, server-e ektu jhamela hocche. 😅"
 
-# =========================
-# 📝 NOTE & BALANCE COMMANDS
-# =========================
-async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    note_text = " ".join(context.args)
-    if not note_text:
-        await update.message.reply_text("❌ Kicchu to lekho! Example: `/note Stock updated for Siam Fabric`", parse_mode="Markdown")
-        return
-    
-    # Ekhane tumi Supabase code add korte parbe. Ekhonkar jonno confirm korche.
-    await update.message.reply_text(f"✅ Note saved: {note_text}")
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "📊 *Usage Status:*\n\n"
-        f"🔹 Remaining Tokens: `{limit_info['remaining_tokens']}`\n"
-        f"🔹 Reset Time: `{limit_info['reset_time']}`"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# =========================
-# 🚀 START & MAIN
-# =========================
+# =====================
+# 🚀 TELEGRAM HANDLERS
+# =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    menu = ReplyKeyboardMarkup([["🤖 Chat", "🧠 Reset"], ["📊 Balance", "📝 Note"]], resize_keyboard=True)
-    await update.message.reply_text("👋 Hello! Ami AR Assistant. Abu Bakar Riyad amake baniyeche.", reply_markup=menu)
+    user_id = update.effective_user.id
+    user_histories[user_id] = [] # স্টার্ট দিলে মেমোরি রিসেট হবে
+    menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
+    await update.message.reply_text("👋 Hello! Ami Riyad Assistant. Ekhon ami shob mone rakhte pari! Ki obostha?", reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
     user_text = update.message.text
     user_id = update.effective_user.id
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    reply = await ask_groq(user_id, user_text)
+    await update.message.reply_text(reply)
 
-    if user_text == "📊 Balance":
-        await balance(update, context)
-        return
-    elif user_text == "🧠 Reset":
-        user_histories[user_id] = []
-        await update.message.reply_text("✅ Memory reset complete.")
-        return
-
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    reply = await ask_ai(user_id, user_text)
-    await update.message.reply_text(reply, parse_mode="Markdown")
-
+# =====================
+# 🚀 MAIN RUNNER
+# =====================
 async def main():
+    if not BOT_TOKEN or not GROQ_API_KEY:
+        return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("note", save_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    
     async with app:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(drop_pending_updates=True)
         await asyncio.Event().wait()
 
-if __name__ == "__main__":
-    def run_health():
-        port = int(os.environ.get("PORT", 8080))
-        HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler).serve_forever()
-    threading.Thread(target=run_health, daemon=True).start()
-    asyncio.run(main())
+if __name__ == '__main__':
+    threading.Thread(target=run_health_check, daemon=True).start()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
