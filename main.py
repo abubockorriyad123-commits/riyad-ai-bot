@@ -18,6 +18,32 @@ DB_NAME = "bot_memory.db"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+
+from duckduckgo_search import DDGS # এটি ইমপোর্ট করুন
+
+# এই ফাংশনটি নতুন যোগ করুন
+def search_news(query):
+    try:
+        with DDGS() as ddgs:
+            # বাংলা খবর খোঁজার জন্য
+            results = ddgs.text(f"{query} Bangladesh news", max_results=3)
+            news_text = "\\n".join([r['body'] for r in results])
+            return news_text
+    except Exception as e:
+        return "Sorry, news khuje pai ni."
+
+# ask_groq ফাংশনের ভেতরে এটি যোগ করুন
+async def ask_groq(user_id, user_text):
+    # যদি ইউজার খবর (news/khobor) জানতে চায়
+    if "news" in user_text.lower() or "খবর" in user_text:
+        internet_data = search_news(user_text)
+        user_text = f"User is asking for news. Here is some internet data: {internet_data}. Now answer the user: {user_text}"
+    
+    # বাকি কোড আগের মতোই থাকবে...
+
+
+
+
 # =====================
 # 🗄️ SQLITE DATABASE SYSTEM
 # =====================
