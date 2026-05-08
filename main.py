@@ -217,8 +217,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     models = {
         "model_ring": "inclusionai/ring-2.6-1t:free",
-        "model_deepseek": "deepseek/deepseek-chat-v3-0324:free",
-        "model_llama": "meta-llama/llama-3-8b-instruct:free"
+        "model_deepseek": "baidu/cobuddy:free",
+        "model_llama": "meta-llama/llama-3.2-3b-instruct:free"
     }
 
     if query.data in models:
