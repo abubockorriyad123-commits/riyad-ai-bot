@@ -1,7 +1,5 @@
 python-telegram-bot==21.6
 groq
 duckduckgo-search
-http.server
-asyncio
 
 
