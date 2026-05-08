@@ -4,35 +4,19 @@ import asyncio
 import threading
 import sqlite3
 import json
+import google.generativeai as genai
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from groq import Groq
-from duckduckgo_search import DDGS
 
 # =====================
 # 🔑 CONFIG & LOGGING
 # =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DB_NAME = "bot_memory.db"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# =====================
-# 🌐 WEB SEARCH SYSTEM
-# =====================
-def search_news(query):
-    try:
-        with DDGS() as ddgs:
-            # সার্চ রেজাল্ট আরও নিখুঁত করার জন্য কুয়েরি মডিফাই করা হয়েছে
-            results = ddgs.text(f"{query} Bangladesh latest news", max_results=3)
-            if results:
-                news_text = "\n".join([f"- {r['body']}" for r in results])
-                return news_text
-    except Exception as e:
-        logging.error(f"Search Error: {e}")
-    return None
 
 # =====================
 # 🗄️ SQLITE DATABASE SYSTEM
@@ -56,21 +40,20 @@ def get_history(user_id):
     return []
 
 def save_history(user_id, history):
-    if len(history) > 10:
-        history = history[-10:]
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO history (user_id, chat_history) VALUES (?, ?)",
-              (user_id, json.dumps(history)))
-    conn.commit()
-    conn.close()
+    if len(history) > 12: # মেমোরি একটু বাড়িয়ে ১২টি করা হয়েছে
+        history = history[-12:]
+    
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO history (user_id, chat_history) VALUES (?, ?)",
+                  (user_id, json.dumps(history)))
+        conn.commit()
 
 def clear_db_history(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM history WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM history WHERE user_id=?", (user_id,))
+        conn.commit()
 
 # =====================
 # 🌐 RENDER PORT FIX
@@ -79,7 +62,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"AR Assistant is Running with Internet Search & SQLite!")
+        self.wfile.write(b"AR Assistant is Running with Gemini & SQLite!")
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
@@ -87,62 +70,45 @@ def run_health_check():
     server.serve_forever()
 
 # =====================
-# 🚀 GROQ SETUP
+# 🚀 GEMINI AI SETUP
 # =====================
-client = Groq(api_key=GROQ_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-SYSTEM_PROMPT = """
-You are AR Assistant. 
-- Personality: Smart, intelligent, and friendly. 
-- Never say Grok, Google, OpenAI, API, or model.
-- If news/internet data is provided, summarize it and answer the user accurately.
-- Language: Bengali and English.
-"""
+# মডেল কনফিগারেশন
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction="You are AR Assistant. You are smart, intelligent, and friendly. Speak in Bengali and English. Never mention Google, Gemini, or being an AI model. Be helpful like a friend."
+)
 
 # =====================
-# 🤖 AI FUNCTION (MEMORY + SEARCH)
+# 🤖 AI FUNCTION WITH PERSISTENT MEMORY
 # =====================
-async def ask_groq(user_id, user_text):
+async def ask_gemini(user_id, user_text):
     try:
-        # ১. ডাটাবেস থেকে মেমোরি নিয়ে আসা
         history = get_history(user_id)
         
-        # ২. ইউজার যদি খবর বা আপডেট জানতে চায়, তবে ইন্টারনেট সার্চ করা
-        search_keywords = ["news", "khobor", "খবর", "আজকের", "update", "latest"]
-        modified_user_text = user_text
-        
-        if any(word in user_text.lower() for word in search_keywords):
-            internet_data = search_news(user_text)
-            if internet_data:
-                modified_user_text = f"User is asking for news. Here is some latest internet info: {internet_data}. Now answer the user: {user_text}"
+        # Gemini-র ফরম্যাটে হিস্ট্রি কনভার্ট করা
+        formatted_history = []
+        for msg in history:
+            role = "user" if msg["role"] == "user" else "model"
+            formatted_history.append({"role": role, "parts": [msg["content"]]})
 
-        # ৩. মেসেজ স্ট্রাকচার তৈরি
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": modified_user_text})
-
-        # ৪. Groq এপিআই কল করা
-        loop = asyncio.get_event_loop()
-        completion = await loop.run_in_executor(
-            None, 
-            lambda: client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=messages,
-                temperature=0.7,
-            )
-        )
+        # চ্যাট সেশন শুরু
+        chat_session = model.start_chat(history=formatted_history)
         
-        reply = completion.choices[0].message.content
+        # রেসপন্স জেনারেট করা (Async wrapper ব্যবহার করে)
+        response = await asyncio.to_thread(chat_session.send_message, user_text)
+        reply = response.text
         
-        # ৫. নতুন চ্যাট হিস্ট্রিতে সেভ করা (সার্চ ডাটা ছাড়া অরিজিনাল মেসেজ সেভ হবে)
+        # মেমোরি সেভ করা
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": reply})
         save_history(user_id, history)
         
         return reply
     except Exception as e:
-        logging.error(f"Error: {e}")
-        return "Sorry রিয়াদ ভাই, সার্ভারে একটু সমস্যা হচ্ছে। 😅"
+        logging.error(f"Gemini Error: {e}")
+        return "দুঃখিত বন্ধু, সার্ভারে একটু সমস্যা হচ্ছে। পরে আবার ট্রাই করো। 😅"
 
 # =====================
 # 🚀 TELEGRAM HANDLERS
@@ -151,23 +117,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     clear_db_history(user_id)
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text("👋 Hello! Ami AR Assistant. Ami ekhon internet search-o korte pari! Ki jante chan?", reply_markup=menu)
+    await update.message.reply_text(
+        "👋 Hello! Ami AR Assistant.\nGemini AI power ekhon active! SQLite memory-r karone ami shob mone rakhte parbo. Bolo, kivabe shahajjo korte pari?", 
+        reply_markup=menu
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.effective_user.id
+    
+    # টাইপিং স্ট্যাটাস দেখানো
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    reply = await ask_groq(user_id, user_text)
+    
+    reply = await ask_gemini(user_id, user_text)
     await update.message.reply_text(reply)
 
 # =====================
 # 🚀 MAIN RUNNER
 # =====================
 async def main():
-    if not BOT_TOKEN or not GROQ_API_KEY:
-        print("Environment variables missing!")
+    if not BOT_TOKEN or not GEMINI_API_KEY:
+        print("BOT_TOKEN and GEMINI_API_KEY variables missing!")
         return
+    
     init_db()
+    
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -179,6 +153,7 @@ async def main():
         await asyncio.Event().wait()
 
 if __name__ == '__main__':
+    # হেলথ চেক থ্রেড শুরু
     threading.Thread(target=run_health_check, daemon=True).start()
     try:
         asyncio.run(main())
