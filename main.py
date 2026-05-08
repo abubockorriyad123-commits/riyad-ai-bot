@@ -135,7 +135,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👤 **Creator Details**\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "**Name:** Abu Bakar Riyad\n"
-            "**WP:** [01328446337](https://wa.me/8801328446337)\n"
+            "**WP:** [01328446336](https://wa.me/8801328446336)\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
         await update.message.reply_text(creator_info, parse_mode="Markdown", disable_web_page_preview=True)
