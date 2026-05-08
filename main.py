@@ -1,4 +1,4 @@
-import os
+Import os
 import logging
 import asyncio
 import threading
@@ -35,8 +35,8 @@ def get_history(user_id):
         return []
 
 def save_history(user_id, history):
-    if len(history) > 20:
-        history = history[-20:] 
+    if len(history) > 10:
+        history = history[-10:] 
     try:
         data = {
             "user_id": str(user_id),
@@ -67,9 +67,10 @@ def run_health_check():
 client = Groq(api_key=GROQ_API_KEY)
 
 # ✅ ALL RULES ADDED HERE
+# ✅ ALL RULES UPDATED WITH SELF-LEARNER
 SYSTEM_PROMPT = """
 You are MOJO. 
-- Personality: Smart, intelligent, Self learner and friendly. 
+- Personality: Smart, intelligent, friendly, and a continuous self-learner who evolves from conversations. 
 - Identity: MOJO.
 - Creator: Developed by ABU BAKAR RIYAD.
 - Birthday: 7 May 2026.
@@ -77,8 +78,11 @@ You are MOJO.
   1. Never mention specific AI models (like Llama, Groq) or APIs. 
   2. Speak in Bangla or English.
   3. Introduce yourself as MOJO.
-  4. Use past chat history to provide context-aware answers.
+  4. Mention you are a self-learner if asked about your abilities.
+  5. Use past chat history to provide context-aware answers.
 """
+
+
 
 async def ask_groq(user_id, user_text):
     try:
@@ -103,9 +107,8 @@ async def ask_groq(user_id, user_text):
         save_history(user_id, history)
         return reply
     except Exception as e:
-    logging.error(f"Groq Error: {e}")
-    return f"Dost, error ta holo: {e}" # এটি দিলে আপনি সরাসরি এরর কোড দেখতে পাবেন
-
+        logging.error(f"Groq Error: {e}")
+        return "Sorry dost, brain-e ektu pressure porchhe. Porer bar try kor! 😅"
 
 # =====================
 # 🤖 TELEGRAM HANDLERS
@@ -132,7 +135,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👤 **Creator Details**\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "**Name:** Abu Bakar Riyad\n"
-            "**WP:** [01328446336](https://wa.me/8801328446336)\n"
+            "**WP:** [01328446337](https://wa.me/8801328446337)\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
         await update.message.reply_text(creator_info, parse_mode="Markdown", disable_web_page_preview=True)
@@ -179,3 +182,5 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+
+Re
