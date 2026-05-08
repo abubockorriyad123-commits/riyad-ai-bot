@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
+from duckduckgo_search import DDGS
 
 # =====================
 # 🔑 CONFIG & LOGGING
@@ -18,31 +19,20 @@ DB_NAME = "bot_memory.db"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-
-from duckduckgo_search import DDGS # এটি ইমপোর্ট করুন
-
-# এই ফাংশনটি নতুন যোগ করুন
+# =====================
+# 🌐 WEB SEARCH SYSTEM
+# =====================
 def search_news(query):
     try:
         with DDGS() as ddgs:
-            # বাংলা খবর খোঁজার জন্য
-            results = ddgs.text(f"{query} Bangladesh news", max_results=3)
-            news_text = "\\n".join([r['body'] for r in results])
-            return news_text
+            # সার্চ রেজাল্ট আরও নিখুঁত করার জন্য কুয়েরি মডিফাই করা হয়েছে
+            results = ddgs.text(f"{query} Bangladesh latest news", max_results=3)
+            if results:
+                news_text = "\n".join([f"- {r['body']}" for r in results])
+                return news_text
     except Exception as e:
-        return "Sorry, news khuje pai ni."
-
-# ask_groq ফাংশনের ভেতরে এটি যোগ করুন
-async def ask_groq(user_id, user_text):
-    # যদি ইউজার খবর (news/khobor) জানতে চায়
-    if "news" in user_text.lower() or "খবর" in user_text:
-        internet_data = search_news(user_text)
-        user_text = f"User is asking for news. Here is some internet data: {internet_data}. Now answer the user: {user_text}"
-    
-    # বাকি কোড আগের মতোই থাকবে...
-
-
-
+        logging.error(f"Search Error: {e}")
+    return None
 
 # =====================
 # 🗄️ SQLITE DATABASE SYSTEM
@@ -50,7 +40,6 @@ async def ask_groq(user_id, user_text):
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # ইউজার আইডি এবং তাদের চ্যাট হিস্ট্রি রাখার জন্য টেবিল
     c.execute('''CREATE TABLE IF NOT EXISTS history 
                  (user_id INTEGER PRIMARY KEY, chat_history TEXT)''')
     conn.commit()
@@ -63,17 +52,14 @@ def get_history(user_id):
     row = c.fetchone()
     conn.close()
     if row:
-        return json.loads(row[0]) # JSON স্ট্রিং থেকে লিস্টে রূপান্তর
+        return json.loads(row[0])
     return []
 
 def save_history(user_id, history):
-    # মেমোরি খুব বড় হওয়া আটকাতে শেষ ১০টি মেসেজ রাখা হচ্ছে
     if len(history) > 10:
         history = history[-10:]
-    
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # ডাটা থাকলে আপডেট করবে, না থাকলে নতুন এন্ট্রি নিবে
     c.execute("INSERT OR REPLACE INTO history (user_id, chat_history) VALUES (?, ?)",
               (user_id, json.dumps(history)))
     conn.commit()
@@ -93,7 +79,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"AR Assistant is Running with SQLite Persistence!")
+        self.wfile.write(b"AR Assistant is Running with Internet Search & SQLite!")
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
@@ -109,22 +95,33 @@ SYSTEM_PROMPT = """
 You are AR Assistant. 
 - Personality: Smart, intelligent, and friendly. 
 - Never say Grok, Google, OpenAI, API, or model.
-- If asked who you are, say: "I am AR Assistant created to help you."
+- If news/internet data is provided, summarize it and answer the user accurately.
 - Language: Bengali and English.
 """
 
 # =====================
-# 🤖 AI FUNCTION WITH PERSISTENT MEMORY
+# 🤖 AI FUNCTION (MEMORY + SEARCH)
 # =====================
 async def ask_groq(user_id, user_text):
     try:
-        # ডাটাবেস থেকে পুরনো কথা নিয়ে আসা
+        # ১. ডাটাবেস থেকে মেমোরি নিয়ে আসা
         history = get_history(user_id)
         
+        # ২. ইউজার যদি খবর বা আপডেট জানতে চায়, তবে ইন্টারনেট সার্চ করা
+        search_keywords = ["news", "khobor", "খবর", "আজকের", "update", "latest"]
+        modified_user_text = user_text
+        
+        if any(word in user_text.lower() for word in search_keywords):
+            internet_data = search_news(user_text)
+            if internet_data:
+                modified_user_text = f"User is asking for news. Here is some latest internet info: {internet_data}. Now answer the user: {user_text}"
+
+        # ৩. মেসেজ স্ট্রাকচার তৈরি
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "user", "content": modified_user_text})
 
+        # ৪. Groq এপিআই কল করা
         loop = asyncio.get_event_loop()
         completion = await loop.run_in_executor(
             None, 
@@ -137,29 +134,28 @@ async def ask_groq(user_id, user_text):
         
         reply = completion.choices[0].message.content
         
-        # নতুন কথা যোগ করে ডাটাবেসে সেভ করা
+        # ৫. নতুন চ্যাট হিস্ট্রিতে সেভ করা (সার্চ ডাটা ছাড়া অরিজিনাল মেসেজ সেভ হবে)
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": reply})
         save_history(user_id, history)
         
         return reply
     except Exception as e:
-        logging.error(f"Groq Error: {e}")
-        return "Sorry dost, server-e ektu jhamela hocche. 😅"
+        logging.error(f"Error: {e}")
+        return "Sorry রিয়াদ ভাই, সার্ভারে একটু সমস্যা হচ্ছে। 😅"
 
 # =====================
 # 🚀 TELEGRAM HANDLERS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    clear_db_history(user_id) # নতুন করে স্টার্ট দিলে পুরনো স্মৃতি মুছে যাবে
+    clear_db_history(user_id)
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text("👋 Hello! Ami AR Assistant. SQLite memory ekhon active, tai bot restart dileo ami shob mone rakhbo!", reply_markup=menu)
+    await update.message.reply_text("👋 Hello! Ami AR Assistant. Ami ekhon internet search-o korte pari! Ki jante chan?", reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.effective_user.id
-    
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     reply = await ask_groq(user_id, user_text)
     await update.message.reply_text(reply)
@@ -171,9 +167,7 @@ async def main():
     if not BOT_TOKEN or not GROQ_API_KEY:
         print("Environment variables missing!")
         return
-    
-    init_db() # ডাটাবেস এবং টেবিল তৈরি করা
-    
+    init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
