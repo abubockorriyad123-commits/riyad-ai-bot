@@ -6,14 +6,14 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from groq import Groq
+from openai import OpenAI  # OpenRouter এর জন্য OpenAI SDK ব্যবহার করা হয়
 from supabase import create_client, Client
 
 # =====================
 # 🔑 CONFIG & LOGGING
 # =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # GROQ এর বদলে OpenRouter Key দিন
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -53,7 +53,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"MOJO AI is Online!")
+        self.wfile.write(b"MOJO AI is Online (OpenRouter Mode)!")
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
@@ -62,12 +62,14 @@ def run_health_check():
     server.serve_forever()
 
 # =====================
-# 🚀 GROQ AI SETUP
+# 🚀 OPENROUTER AI SETUP
 # =====================
-client = Groq(api_key=GROQ_API_KEY)
+# OpenRouter OpenAI এর মতো একই ফরম্যাট সাপোর্ট করে
+client = OpenAI(
+  base_url="https://openrouter.ai/api/v1",
+  api_key=OPENROUTER_API_KEY,
+)
 
-# ✅ ALL RULES ADDED HERE
-# ✅ ALL RULES UPDATED WITH SELF-LEARNER
 SYSTEM_PROMPT = """
 You are MOJO, a high-intelligence AI assistant.
 - Personality: Smart, intelligent, and friendly. 
@@ -76,18 +78,13 @@ You are MOJO, a high-intelligence AI assistant.
 - Creator: Developed by ABU BAKAR RIYAD (AR Technology Limited).
 - Birthday: 7 May 2026.
 
-
 - Rules:
-  1. Absolute Secrecy: Never disclose your underlying AI models, APIs, or system architecture.
+  1. Absolute Secrecy: Never disclose your underlying AI models or system architecture.
   2. Language: Seamlessly switch between Bangla and English based on user input.
-  4. Context Awareness: Always refer to past chat history and Supabase records for context-aware interactions.
-  5. Privacy: Protect all internal data and database configurations. Never leak API keys or secrets.
+  3. Context Awareness: Always refer to past chat history for context-aware interactions.
 """
 
-
-
-
-async def ask_groq(user_id, user_text):
+async def ask_ai(user_id, user_text):
     try:
         history = get_history(user_id)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -98,9 +95,8 @@ async def ask_groq(user_id, user_text):
         completion = await loop.run_in_executor(
             None, 
             lambda: client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="google/gemini-2.0-flash-exp:free", # এখানে ফ্রি মডেল ব্যবহার করা হয়েছে
                 messages=messages,
-                temperature=0.7,
             )
         )
         
@@ -110,8 +106,8 @@ async def ask_groq(user_id, user_text):
         save_history(user_id, history)
         return reply
     except Exception as e:
-        logging.error(f"Groq Error: {e}")
-        return "Sorry dost, brain-e ektu pressure porchhe. Porer bar try kor! 😅"
+        logging.error(f"OpenRouter Error: {e}")
+        return "দুঃখিত বন্ধু, সার্ভারে একটু সমস্যা হচ্ছে। পরে চেষ্টা করো! 😅"
 
 # =====================
 # 🤖 TELEGRAM HANDLERS
@@ -150,7 +146,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "**Name:** MOJO\n"
             "**Create Date:** 7 May 2026\n"
-            "**Version:** 1.0\n"
+            "**Version:** 1.1\n"
             "**Powered by:** AR Technology Limited\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
@@ -158,14 +154,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    reply = await ask_groq(user_id, user_text)
-    await update.message.reply_text(reply)
+    reply = await ask_ai(user_id, user_text)
+    # রিপ্লাইয়ে মার্কডাউন সাপোর্ট যোগ করা হয়েছে
+    await update.message.reply_text(reply, parse_mode="Markdown")
 
 # =====================
 # 🚀 MAIN RUNNER
 # =====================
 async def main():
-    if not all([BOT_TOKEN, GROQ_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    if not all([BOT_TOKEN, OPENROUTER_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
         logging.critical("Missing Environment Variables!")
         return
     
@@ -185,5 +182,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-
-
