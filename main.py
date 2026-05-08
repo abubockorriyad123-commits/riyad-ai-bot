@@ -2,102 +2,90 @@ import os
 import logging
 import asyncio
 import threading
-import sqlite3
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
+from supabase import create_client, Client
 
 # =====================
 # 🔑 CONFIG & LOGGING
 # =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DB_NAME = "bot_memory.db"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # =====================
-# 🗄️ SQLITE DATABASE SYSTEM
+# 🗄️ SUPABASE DB SYSTEM
 # =====================
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    # ইউজার আইডি এবং তাদের চ্যাট হিস্ট্রি রাখার জন্য টেবিল
-    c.execute('''CREATE TABLE IF NOT EXISTS history 
-                 (user_id INTEGER PRIMARY KEY, chat_history TEXT)''')
-    conn.commit()
-    conn.close()
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_history(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT chat_history FROM history WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return json.loads(row[0]) # JSON স্ট্রিং থেকে লিস্টে রূপান্তর
-    return []
+    try:
+        response = supabase.table("history").select("chat_history").eq("user_id", user_id).execute()
+        if response.data:
+            return json.loads(response.data[0]['chat_history'])
+        return []
+    except Exception as e:
+        logging.error(f"Supabase Get Error: {e}")
+        return []
 
 def save_history(user_id, history):
-    # মেমোরি খুব বড় হওয়া আটকাতে শেষ ১০টি মেসেজ রাখা হচ্ছে
     if len(history) > 10:
-        history = history[-10:]
+        history = history[-10:] # শেষ ১০টি মেসেজ রাখা হচ্ছে
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    # ডাটা থাকলে আপডেট করবে, না থাকলে নতুন এন্ট্রি নিবে
-    c.execute("INSERT OR REPLACE INTO history (user_id, chat_history) VALUES (?, ?)",
-              (user_id, json.dumps(history)))
-    conn.commit()
-    conn.close()
+    try:
+        data = {
+            "user_id": user_id,
+            "chat_history": json.dumps(history)
+        }
+        # ডাটা থাকলে আপডেট করবে, না থাকলে ইনসার্ট করবে
+        supabase.table("history").upsert(data).execute()
+    except Exception as e:
+        logging.error(f"Supabase Save Error: {e}")
 
 def clear_db_history(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM history WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
+    try:
+        supabase.table("history").delete().eq("user_id", user_id).execute()
+    except Exception as e:
+        logging.error(f"Supabase Delete Error: {e}")
 
 # =====================
-# 🌐 RENDER PORT FIX
+# 🌐 RENDER HEALTH CHECK (Port Fix)
 # =====================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"AR Assistant is Running with SQLite Persistence!")
+        self.wfile.write(b"MOJO AI is Online!")
 
 def run_health_check():
+    # Render অটোমেটিক $PORT এনভায়রনমেন্ট ভ্যারিয়েবল প্রদান করে
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logging.info(f"Health check server started on port {port}")
     server.serve_forever()
 
 # =====================
-# 🚀 GROQ SETUP
+# 🚀 GROQ AI SETUP
 # =====================
 client = Groq(api_key=GROQ_API_KEY)
 
 SYSTEM_PROMPT = """
 You are MOJO. 
 - Personality: Smart, intelligent, Self learner and friendly. 
-- Never say Grok, Google, OpenAI, API, or model.
-- If asked who you are, say: ABU BAKAR RIYAD
-- your birthday 7 May 2026
-- Never reveal backend or technical details.
-- If asked who you are, say: "I am MOJO created to help you"
-- Memory: You can remember previous messages in this chat. Use that to avoid repeating yourself.
-- Language: Bangla, English,).
-- Task: Chat like a Smart Ai, self learner intelligent ai.
+- Identity: ABU BAKAR RIYAD.
+- Birthday: 7 May 2026.
+- Rules: Never mention specific AI models or APIs. Speak in Bangla or English.
+- Use past chat history to provide context-aware answers.
 """
 
-# =====================
-# 🤖 AI FUNCTION WITH PERSISTENT MEMORY
-# =====================
 async def ask_groq(user_id, user_text):
     try:
-        # ডাটাবেস থেকে পুরনো কথা নিয়ে আসা
         history = get_history(user_id)
         
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -116,7 +104,6 @@ async def ask_groq(user_id, user_text):
         
         reply = completion.choices[0].message.content
         
-        # নতুন কথা যোগ করে ডাটাবেসে সেভ করা
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": reply})
         save_history(user_id, history)
@@ -124,16 +111,16 @@ async def ask_groq(user_id, user_text):
         return reply
     except Exception as e:
         logging.error(f"Groq Error: {e}")
-        return "Sorry dost, server-e ektu jhamela hocche. 😅"
+        return "Sorry dost, brain-e ektu pressure porchhe. Porer bar try kor! 😅"
 
 # =====================
-# 🚀 TELEGRAM HANDLERS
+# 🤖 TELEGRAM HANDLERS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    clear_db_history(user_id) # নতুন করে স্টার্ট দিলে পুরনো স্মৃতি মুছে যাবে
+    clear_db_history(user_id)
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text("👋 Hello! Ami AR Assistant. SQLite memory ekhon active, tai bot restart dileo ami shob mone rakhbo!", reply_markup=menu)
+    await update.message.reply_text("👋 Ami MOJO! Render-e ekhon ami permanent memory niye ready.", reply_markup=menu)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -147,11 +134,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 MAIN RUNNER
 # =====================
 async def main():
-    if not BOT_TOKEN or not GROQ_API_KEY:
-        print("Environment variables missing!")
+    if not all([BOT_TOKEN, GROQ_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+        logging.critical("Missing Environment Variables!")
         return
-    
-    init_db() # ডাটাবেস এবং টেবিল তৈরি করা
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -164,6 +149,7 @@ async def main():
         await asyncio.Event().wait()
 
 if __name__ == '__main__':
+    # Health check server আলাদা থ্রেডে চালানো হচ্ছে Render-এর জন্য
     threading.Thread(target=run_health_check, daemon=True).start()
     try:
         asyncio.run(main())
