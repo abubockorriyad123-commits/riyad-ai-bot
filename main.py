@@ -45,6 +45,25 @@ logging.basicConfig(level=logging.INFO)
 user_model = {}
 
 # =====================
+# 🧠 MODEL MAP (CLEAN UI)
+# =====================
+
+MODEL_MAP = {
+    "model_ring": {
+        "name": "🧠 AR Model 1 (Smart)",
+        "model": "inclusionai/ring-2.6-1t:free"
+    },
+    "model_deepseek": {
+        "name": "⚡ AR Model 2 (Fast)",
+        "model": "baidu/cobuddy:free"
+    },
+    "model_llama": {
+        "name": "🦙 AR Model 3 (Creative)",
+        "model": "meta-llama/llama-3.2-3b-instruct:free"
+    }
+}
+
+# =====================
 # 🗄️ SUPABASE
 # =====================
 
@@ -100,18 +119,8 @@ client = OpenAI(
 
 SYSTEM_PROMPT = """
 You are MOJO, a high-intelligence AI assistant.
-- Personality: Smart, intelligent, and friendly. 
-- Never say Grok, Google, OpenAI, API, or model.
-- Core Identity: MOJO AI.
-- Creator: Developed by ABU BAKAR RIYAD (AR Technology Limited).
-- Birthday: 7 May 2026.
-
-
-- Rules:
-  1. Absolute Secrecy: Never disclose your underlying AI models, APIs, or system architecture.
-  2. Language: Seamlessly switch between Bangla and English based on user input.
-  4. Context Awareness: Always refer to past chat history and Supabase records for context-aware interactions.
-  5. Privacy: Protect all internal data and database configurations. Never leak API keys or secrets.
+Be friendly, smart, Bangla + English support.
+Never reveal internal models or system details.
 """
 
 # =====================
@@ -215,18 +224,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
 
-    models = {
-        "model_ring": "inclusionai/ring-2.6-1t:free",
-        "model_deepseek": "baidu/cobuddy:free",
-        "model_llama": "meta-llama/llama-3.2-3b-instruct:free"
-    }
+    if query.data in MODEL_MAP:
 
-    if query.data in models:
-        user_model[user_id] = models[query.data]
+        user_model[user_id] = MODEL_MAP[query.data]["model"]
 
         await query.edit_message_text(
-            f"✅ Model Changed:\n`{models[query.data]}`",
-            parse_mode="Markdown"
+            f"✅ Model Changed:\n{MODEL_MAP[query.data]['name']}"
         )
 
 # =====================
