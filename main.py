@@ -35,27 +35,21 @@ def get_history(user_id):
         return []
 
 def save_history(user_id, history):
-    if len(history) > 10:
-        history = history[-10:] # শেষ ১০টি মেসেজ রাখা হচ্ছে
+    # মেমোরি ২০টি মেসেজ পর্যন্ত বাড়ানো হয়েছে
+    if len(history) > 20:
+        history = history[-20:] 
     
     try:
         data = {
             "user_id": user_id,
             "chat_history": json.dumps(history)
         }
-        # ডাটা থাকলে আপডেট করবে, না থাকলে ইনসার্ট করবে
         supabase.table("history").upsert(data).execute()
     except Exception as e:
         logging.error(f"Supabase Save Error: {e}")
 
-def clear_db_history(user_id):
-    try:
-        supabase.table("history").delete().eq("user_id", user_id).execute()
-    except Exception as e:
-        logging.error(f"Supabase Delete Error: {e}")
-
 # =====================
-# 🌐 RENDER HEALTH CHECK (Port Fix)
+# 🌐 RENDER HEALTH CHECK
 # =====================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -64,7 +58,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"MOJO AI is Online!")
 
 def run_health_check():
-    # Render অটোমেটিক $PORT এনভায়রনমেন্ট ভ্যারিয়েবল প্রদান করে
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     logging.info(f"Health check server started on port {port}")
@@ -78,7 +71,7 @@ client = Groq(api_key=GROQ_API_KEY)
 SYSTEM_PROMPT = """
 You are MOJO. 
 - Personality: Smart, intelligent, Self learner and friendly. 
-- Identity: ABU BAKAR RIYAD.
+- Identity: MOJO.
 - Birthday: 7 May 2026.
 - Rules: Never mention specific AI models or APIs. Speak in Bangla or English.
 - Use past chat history to provide context-aware answers.
@@ -118,9 +111,17 @@ async def ask_groq(user_id, user_text):
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    clear_db_history(user_id)
+    
+    # এখানে clear_db_history কল করা হচ্ছে না, তাই মেমোরি ডিলিট হবে না
+    
     menu = ReplyKeyboardMarkup([["🤖 Chat", "ℹ️ Help"]], resize_keyboard=True)
-    await update.message.reply_text("✨ MOJO is Online! ✨", reply_markup=menu)
+    
+    welcome_text = (
+        "✨ **MOJO is Online!** ✨\n\n"
+        "আমি MOJO, আমাকে তৈরি করেছেন আবু বকর রিয়াদ। আমি একজন স্মার্ট এবং ফ্রেন্ডলি এআই অ্যাসিস্ট্যান্ট হিসেবে আপনাকে সাহায্য করার জন্য সব সময় প্রস্তুত!"
+    )
+    
+    await update.message.reply_text(welcome_text, reply_markup=menu, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -139,6 +140,8 @@ async def main():
         return
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # হ্যান্ডলারগুলো অ্যাড করা হচ্ছে
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
@@ -149,7 +152,6 @@ async def main():
         await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    # Health check server আলাদা থ্রেডে চালানো হচ্ছে Render-এর জন্য
     threading.Thread(target=run_health_check, daemon=True).start()
     try:
         asyncio.run(main())
