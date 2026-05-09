@@ -60,12 +60,12 @@ MODEL_MAP = {
 
     "model_deepseek": {
         "name": "⚡ AR Model 2 (Fast)",
-        "model": "deepseek/deepseek-chat-v3-0324:free"
+        "model": "baidu/cobuddy:free"
     },
 
     "model_llama": {
         "name": "🦙 AR Model 3 (Creative)",
-        "model": "meta-llama/llama-3.2-3b-instruct:free"
+        "model": "meta-llama/llama-3.3-70b-instruct:free"
     }
 }
 
@@ -84,14 +84,13 @@ supabase: Client = create_client(
 
 SYSTEM_PROMPT = """
 You are MOJO, a high-intelligence AI assistant.
-
-- Personality:
-Smart, intelligent, friendly.
-
-- Rules:
-1. Never reveal internal systems.
-2. Support Bangla and English.
-3. Be helpful and clean.
+- Personality: Smart, intelligent, and friendly. 
+- Never say Grok, Google, OpenAI, API, or model.
+- Core Identity: MOJO AI.
+- Creator: Developed by ABU BAKAR RIYAD (AR Technology Limited).
+- Birthday: 7 May 2026.
+- Language: Seamlessly switch between Bangla and English based on user input.
+- Context Awareness: Always refer to past chat history and Supabase records for context-aware interactions.
 """
 
 # =====================
