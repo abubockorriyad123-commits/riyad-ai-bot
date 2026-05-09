@@ -31,7 +31,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_ID = 8287002826
 
 if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("Missing ENV variables")
+    raise Exception("❌ Missing ENV variables")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,16 +44,15 @@ user_provider = {}
 user_model = {}
 user_memory = {}
 user_step = {}
-user_history = {}
 
 providers_cache = {}
 models_cache = {}
 
-SYSTEM_PROMPT = "You are a helpful AI assistant."
+SYSTEM_PROMPT = "You are a helpful AI assistant"
 MAX_MEMORY = 10
 
 # =====================
-# LOADERS
+# LOAD DATA FROM SUPABASE
 # =====================
 def load_providers():
     global providers_cache
@@ -77,20 +76,6 @@ def load_prompt():
         pass
 
 # =====================
-# NAVIGATION HELPERS
-# =====================
-def push_state(uid, state):
-    if uid not in user_history:
-        user_history[uid] = []
-    user_history[uid].append(state)
-
-def go_back(uid):
-    if uid in user_history and len(user_history[uid]) > 1:
-        user_history[uid].pop()
-        return user_history[uid][-1]
-    return None
-
-# =====================
 # AI ENGINE
 # =====================
 async def ask_ai(uid, text):
@@ -99,13 +84,13 @@ async def ask_ai(uid, text):
         mid = user_model.get(uid)
 
         if not pid or not mid:
-            return "❌ /settings দিয়ে model select করো"
+            return "❌ আগে /settings দিয়ে model select করো"
 
         provider = providers_cache.get(pid)
         model_info = next((m for m in models_cache.get(pid, []) if m["id"] == mid), None)
 
         if not provider or not model_info:
-            return "❌ Model error"
+            return "❌ Model configuration error"
 
         client = AsyncOpenAI(
             base_url=provider["base_url"],
@@ -135,7 +120,7 @@ async def ask_ai(uid, text):
         return reply
 
     except Exception as e:
-        logging.error("AI error", exc_info=True)
+        logging.error("AI ERROR", exc_info=True)
         return "❌ AI error"
 
 # =====================
@@ -143,13 +128,13 @@ async def ask_ai(uid, text):
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Bot Ready\nUse /settings",
+        "🤖 AI Bot Ready\nUse /settings",
         reply_markup=ReplyKeyboardMarkup([["⚙️ Admin Panel"]], resize_keyboard=True)
     )
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not providers_cache:
-        return await update.message.reply_text("No providers")
+        return await update.message.reply_text("No providers found")
 
     buttons = [
         [InlineKeyboardButton(p["name"], callback_data=f"sel_p_{pid}")]
@@ -170,23 +155,21 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Model", callback_data="wiz_model")]
     ]
 
-    await update.message.reply_text("🛠 Admin", reply_markup=InlineKeyboardMarkup(panel))
+    await update.message.reply_text("🛠 Admin Panel", reply_markup=InlineKeyboardMarkup(panel))
 
 # =====================
-# CALLBACKS
+# CALLBACK HANDLER
 # =====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
     await q.answer()
 
-    # ================= PROVIDER =================
+    # Provider select
     if q.data.startswith("sel_p_"):
         pid = q.data.replace("sel_p_", "")
         user_provider[uid] = pid
 
-        push_state(uid, "provider")
-
         models = models_cache.get(pid, [])
 
         buttons = [
@@ -194,58 +177,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for m in models
         ]
 
-        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
-
         await q.edit_message_text(
             "Select Model:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # ================= MODEL =================
+    # Model select
     elif q.data.startswith("sel_m_"):
         mid = q.data.replace("sel_m_", "")
         user_model[uid] = mid
 
-        push_state(uid, "model")
-
-        await q.edit_message_text(
-            "✅ Ready to chat",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="back_to_provider")]
-            ])
-        )
-
-    # ================= BACK =================
-    elif q.data == "back_to_settings":
-        buttons = [
-            [InlineKeyboardButton(p["name"], callback_data=f"sel_p_{pid}")]
-            for pid, p in providers_cache.items()
-        ]
-
-        await q.edit_message_text(
-            "Select Provider:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    elif q.data == "back_to_provider":
-        pid = user_provider.get(uid)
-
-        models = models_cache.get(pid, [])
-
-        buttons = [
-            [InlineKeyboardButton(m["model_name"], callback_data=f"sel_m_{m['id']}")]
-            for m in models
-        ]
-
-        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
-
-        await q.edit_message_text(
-            "Select Model:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await q.edit_message_text("✅ Setup Complete")
 
     else:
-        await q.edit_message_text("❌ Unknown")
+        await q.edit_message_text("❌ Unknown action")
 
 # =====================
 # MESSAGE HANDLER
@@ -271,7 +216,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
 # =====================
-# MAIN (FIXED)
+# MAIN (NO CRASH VERSION)
 # =====================
 def main():
     load_providers()
@@ -286,12 +231,15 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Render health server
     threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), HealthHandler).serve_forever(),
+        target=lambda: HTTPServer(
+            ("0.0.0.0", int(os.getenv("PORT", 8080)))
+        ).serve_forever(),
         daemon=True
     ).start()
 
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
