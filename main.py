@@ -1,8 +1,6 @@
 import os
 import logging
-import asyncio
 import threading
-import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import (
@@ -21,53 +19,52 @@ from telegram.ext import (
     filters
 )
 
-from telegram.constants import ParseMode
-
-from openai import OpenAI
+from openai import AsyncOpenAI
 from supabase import create_client, Client
 
 # =====================
 # CONFIG
 # =====================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
 ADMIN_ID = 8287002826
+
+if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
+    raise Exception("Missing ENV variables")
 
 logging.basicConfig(level=logging.INFO)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =====================
-# MEMORY
+# STATE
 # =====================
-
 user_provider = {}
 user_model = {}
+user_memory = {}
 user_step = {}
+user_history = {}
 
 providers_cache = {}
 models_cache = {}
 
-SYSTEM_PROMPT = "You are AI assistant"
+SYSTEM_PROMPT = "You are a helpful AI assistant."
+MAX_MEMORY = 10
 
 # =====================
-# LOAD DATA
+# LOADERS
 # =====================
-
 def load_providers():
     global providers_cache
     res = supabase.table("providers").select("*").execute()
-    providers_cache = {p["id"]: p for p in res.data}
+    providers_cache = {p["id"]: p for p in (res.data or [])}
 
 def load_models():
     global models_cache
     res = supabase.table("ai_models").select("*").execute()
-
     models_cache = {}
-    for m in res.data:
+    for m in (res.data or []):
         models_cache.setdefault(m["provider_id"], []).append(m)
 
 def load_prompt():
@@ -79,290 +76,204 @@ def load_prompt():
     except:
         pass
 
-def save_prompt(p):
-    supabase.table("bot_config").upsert({
-        "id": 1,
-        "system_prompt": p
-    }).execute()
-
 # =====================
-# AI CLIENT
+# NAVIGATION HELPERS
 # =====================
+def push_state(uid, state):
+    if uid not in user_history:
+        user_history[uid] = []
+    user_history[uid].append(state)
 
-def get_client(pid):
-    p = providers_cache.get(pid)
-    if not p:
-        return None
-
-    return OpenAI(
-        base_url=p["base_url"],
-        api_key=p["api_key"]
-    )
+def go_back(uid):
+    if uid in user_history and len(user_history[uid]) > 1:
+        user_history[uid].pop()
+        return user_history[uid][-1]
+    return None
 
 # =====================
 # AI ENGINE
 # =====================
-
 async def ask_ai(uid, text):
-
     try:
         pid = user_provider.get(uid)
         mid = user_model.get(uid)
 
+        if not pid or not mid:
+            return "❌ /settings দিয়ে model select করো"
+
         provider = providers_cache.get(pid)
-        model = None
+        model_info = next((m for m in models_cache.get(pid, []) if m["id"] == mid), None)
 
-        if pid in models_cache:
-            for m in models_cache[pid]:
-                if m["id"] == mid:
-                    model = m
+        if not provider or not model_info:
+            return "❌ Model error"
 
-        if not provider or not model:
-            return "❌ Provider/Model not selected"
-
-        client = get_client(pid)
-
-        loop = asyncio.get_event_loop()
-
-        res = await loop.run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=model["model_id"],
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": text}
-                ]
-            )
+        client = AsyncOpenAI(
+            base_url=provider["base_url"],
+            api_key=provider["api_key"]
         )
 
-        return res.choices[0].message.content
+        if uid not in user_memory:
+            user_memory[uid] = []
+
+        user_memory[uid].append({"role": "user", "content": text})
+        user_memory[uid] = user_memory[uid][-MAX_MEMORY:]
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ] + user_memory[uid]
+
+        res = await client.chat.completions.create(
+            model=model_info["model_id"],
+            messages=messages
+        )
+
+        reply = res.choices[0].message.content
+
+        user_memory[uid].append({"role": "assistant", "content": reply})
+        user_memory[uid] = user_memory[uid][-MAX_MEMORY:]
+
+        return reply
 
     except Exception as e:
-        logging.error(e)
-        return "❌ Error"
+        logging.error("AI error", exc_info=True)
+        return "❌ AI error"
 
 # =====================
-# ADMIN PANEL
+# COMMANDS
 # =====================
-
-ADMIN_PANEL = [
-    [InlineKeyboardButton("➕ Provider Wizard", callback_data="wiz_provider")],
-    [InlineKeyboardButton("➕ Model Wizard", callback_data="wiz_model")],
-    [InlineKeyboardButton("🧠 Edit Prompt", callback_data="wiz_prompt")],
-]
-
-BACK_BTN = InlineKeyboardMarkup(
-    [[InlineKeyboardButton("⬅️ Back", callback_data="back")]]
-)
-
-# =====================
-# START
-# =====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
-        "🤖 AI Platform Ready",
-        reply_markup=ReplyKeyboardMarkup(
-            [["⚙️ Admin Panel"]],
-            resize_keyboard=True
-        )
+        "🤖 Bot Ready\nUse /settings",
+        reply_markup=ReplyKeyboardMarkup([["⚙️ Admin Panel"]], resize_keyboard=True)
     )
 
-# =====================
-# ADMIN PANEL
-# =====================
+async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not providers_cache:
+        return await update.message.reply_text("No providers")
+
+    buttons = [
+        [InlineKeyboardButton(p["name"], callback_data=f"sel_p_{pid}")]
+        for pid, p in providers_cache.items()
+    ]
+
+    await update.message.reply_text(
+        "Select Provider:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ No Access")
-
-    await update.message.reply_text(
-        "🛠 Admin Panel",
-        reply_markup=InlineKeyboardMarkup(ADMIN_PANEL)
-    )
-
-# =====================
-# WIZARD HANDLER
-# =====================
-
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    q = update.callback_query
-    await q.answer()
-
-    uid = q.from_user.id
-
-    if uid != ADMIN_ID:
         return
 
-    # BACK
-    if q.data == "back":
-        user_step[uid] = None
-        return await q.edit_message_text(
-            "🔙 Admin Panel",
-            reply_markup=InlineKeyboardMarkup(ADMIN_PANEL)
-        )
+    panel = [
+        [InlineKeyboardButton("➕ Add Provider", callback_data="wiz_provider")],
+        [InlineKeyboardButton("➕ Add Model", callback_data="wiz_model")]
+    ]
 
-    # =====================
-    # PROVIDER WIZARD
-    # =====================
-
-    if q.data == "wiz_provider":
-        user_step[uid] = "p_id"
-        return await q.edit_message_text(
-            "🧠 Step 1: Send Provider ID",
-            reply_markup=BACK_BTN
-        )
-
-    # =====================
-    # MODEL WIZARD
-    # =====================
-
-    if q.data == "wiz_model":
-        user_step[uid] = "m_pid"
-        return await q.edit_message_text(
-            "🧠 Step 1: Provider ID",
-            reply_markup=BACK_BTN
-        )
-
-    # =====================
-    # PROMPT WIZARD
-    # =====================
-
-    if q.data == "wiz_prompt":
-        user_step[uid] = "prompt"
-        return await q.edit_message_text(
-            "🧠 Send new system prompt",
-            reply_markup=BACK_BTN
-        )
+    await update.message.reply_text("🛠 Admin", reply_markup=InlineKeyboardMarkup(panel))
 
 # =====================
-# MESSAGE HANDLER (WIZARD FLOW)
+# CALLBACKS
 # =====================
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    await q.answer()
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ================= PROVIDER =================
+    if q.data.startswith("sel_p_"):
+        pid = q.data.replace("sel_p_", "")
+        user_provider[uid] = pid
 
-    text = update.message.text
+        push_state(uid, "provider")
+
+        models = models_cache.get(pid, [])
+
+        buttons = [
+            [InlineKeyboardButton(m["model_name"], callback_data=f"sel_m_{m['id']}")]
+            for m in models
+        ]
+
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
+
+        await q.edit_message_text(
+            "Select Model:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    # ================= MODEL =================
+    elif q.data.startswith("sel_m_"):
+        mid = q.data.replace("sel_m_", "")
+        user_model[uid] = mid
+
+        push_state(uid, "model")
+
+        await q.edit_message_text(
+            "✅ Ready to chat",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_provider")]
+            ])
+        )
+
+    # ================= BACK =================
+    elif q.data == "back_to_settings":
+        buttons = [
+            [InlineKeyboardButton(p["name"], callback_data=f"sel_p_{pid}")]
+            for pid, p in providers_cache.items()
+        ]
+
+        await q.edit_message_text(
+            "Select Provider:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif q.data == "back_to_provider":
+        pid = user_provider.get(uid)
+
+        models = models_cache.get(pid, [])
+
+        buttons = [
+            [InlineKeyboardButton(m["model_name"], callback_data=f"sel_m_{m['id']}")]
+            for m in models
+        ]
+
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
+
+        await q.edit_message_text(
+            "Select Model:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    else:
+        await q.edit_message_text("❌ Unknown")
+
+# =====================
+# MESSAGE HANDLER
+# =====================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-
-    step = user_step.get(uid)
-
-    # CANCEL SAFE
-    if text and text.lower() in ["/cancel", "cancel", "back"]:
-        user_step[uid] = None
-        return await update.message.reply_text("🔙 Cancelled")
-
-    # =====================
-    # PROVIDER WIZARD FLOW
-    # =====================
-
-    if uid == ADMIN_ID and step:
-
-        try:
-
-            # STEP 1
-            if step == "p_id":
-                context.user_data["p_id"] = text
-                user_step[uid] = "p_name"
-                return await update.message.reply_text("Step 2: Provider Name")
-
-            if step == "p_name":
-                context.user_data["p_name"] = text
-                user_step[uid] = "p_url"
-                return await update.message.reply_text("Step 3: Base URL")
-
-            if step == "p_url":
-                context.user_data["p_url"] = text
-                user_step[uid] = "p_key"
-                return await update.message.reply_text("Step 4: API Key")
-
-            if step == "p_key":
-
-                supabase.table("providers").insert({
-                    "id": context.user_data["p_id"],
-                    "name": context.user_data["p_name"],
-                    "base_url": context.user_data["p_url"],
-                    "api_key": text
-                }).execute()
-
-                load_providers()
-                user_step[uid] = None
-
-                return await update.message.reply_text("✅ Provider Added")
-
-            # =====================
-            # MODEL WIZARD
-            # =====================
-
-            if step == "m_pid":
-                context.user_data["m_pid"] = text
-                user_step[uid] = "m_id"
-                return await update.message.reply_text("Model ID")
-
-            if step == "m_id":
-                context.user_data["m_id"] = text
-                user_step[uid] = "m_name"
-                return await update.message.reply_text("Model Name")
-
-            if step == "m_name":
-                context.user_data["m_name"] = text
-                user_step[uid] = "m_model"
-                return await update.message.reply_text("Model API Name")
-
-            if step == "m_model":
-
-                supabase.table("ai_models").insert({
-                    "provider_id": context.user_data["m_pid"],
-                    "id": context.user_data["m_id"],
-                    "model_name": context.user_data["m_name"],
-                    "model_id": text
-                }).execute()
-
-                load_models()
-                user_step[uid] = None
-
-                return await update.message.reply_text("✅ Model Added")
-
-            # =====================
-            # PROMPT WIZARD
-            # =====================
-
-            if step == "prompt":
-
-                global SYSTEM_PROMPT
-                SYSTEM_PROMPT = text
-                save_prompt(text)
-
-                user_step[uid] = None
-
-                return await update.message.reply_text("✅ Prompt Updated")
-
-        except Exception as e:
-            logging.error(e)
-            user_step[uid] = None
-            return await update.message.reply_text("❌ Error, reset")
-
-    # =====================
-    # NORMAL FLOW
-    # =====================
+    text = update.message.text
 
     if text == "⚙️ Admin Panel":
         return await admin(update, context)
 
-    await update.message.reply_text("🤖 Thinking...")
-
+    msg = await update.message.reply_text("🤔 Thinking...")
     reply = await ask_ai(uid, text)
-
-    await update.message.reply_text(reply)
+    await msg.edit_text(reply)
 
 # =====================
-# MAIN
+# HEALTH SERVER
 # =====================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
 
-async def main():
-
+# =====================
+# MAIN (FIXED)
+# =====================
+def main():
     load_providers()
     load_models()
     load_prompt()
@@ -370,24 +281,17 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.add_handler(CallbackQueryHandler(button))
-
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        await asyncio.Event().wait()
-
-# =====================
-# RUN
-# =====================
-
-if __name__ == "__main__":
+    app.add_handler(CommandHandler("settings", settings))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), BaseHTTPRequestHandler).serve_forever(),
+        target=lambda: HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), HealthHandler).serve_forever(),
         daemon=True
     ).start()
 
-    asyncio.run(main())
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
