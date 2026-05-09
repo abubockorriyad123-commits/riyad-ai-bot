@@ -22,7 +22,6 @@ from telegram.ext import (
 )
 
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
 
 from openai import OpenAI
 from supabase import create_client, Client
@@ -32,7 +31,6 @@ from supabase import create_client, Client
 # =====================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -40,26 +38,37 @@ ADMIN_ID = 8287002826
 
 logging.basicConfig(level=logging.INFO)
 
-# =====================
-# SUPABASE
-# =====================
-
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =====================
-# OPENROUTER
+# MEMORY
 # =====================
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY
-)
+user_provider = {}
+user_model = {}
+user_step = {}
+
+providers_cache = {}
+models_cache = {}
+
+SYSTEM_PROMPT = "You are AI assistant"
 
 # =====================
-# SYSTEM PROMPT
+# LOAD DATA
 # =====================
 
-SYSTEM_PROMPT = "You are MOJO AI assistant."
+def load_providers():
+    global providers_cache
+    res = supabase.table("providers").select("*").execute()
+    providers_cache = {p["id"]: p for p in res.data}
+
+def load_models():
+    global models_cache
+    res = supabase.table("ai_models").select("*").execute()
+
+    models_cache = {}
+    for m in res.data:
+        models_cache.setdefault(m["provider_id"], []).append(m)
 
 def load_prompt():
     global SYSTEM_PROMPT
@@ -71,113 +80,80 @@ def load_prompt():
         pass
 
 def save_prompt(p):
-    try:
-        supabase.table("bot_config").upsert({
-            "id": 1,
-            "system_prompt": p
-        }).execute()
-    except:
-        pass
+    supabase.table("bot_config").upsert({
+        "id": 1,
+        "system_prompt": p
+    }).execute()
 
 # =====================
-# MODEL SYSTEM
+# AI CLIENT
 # =====================
 
-user_model = {}
-MODEL_MAP = {}
-
-def load_models():
-    global MODEL_MAP
-    try:
-        res = supabase.table("ai_models").select("*").execute()
-
-        MODEL_MAP = {
-            m["id"]: {
-                "name": m["model_name"],
-                "model": m["model_id"]
-            }
-            for m in res.data
-        }
-    except:
-        MODEL_MAP = {}
-
-# =====================
-# HISTORY
-# =====================
-
-def get_history(uid):
-    try:
-        res = supabase.table("history").select("chat_history").eq("user_id", str(uid)).execute()
-        if res.data:
-            return json.loads(res.data[0]["chat_history"])
-        return []
-    except:
-        return []
-
-def save_history(uid, h):
-    try:
-        if len(h) > 10:
-            h = h[-10:]
-
-        supabase.table("history").upsert({
-            "user_id": str(uid),
-            "chat_history": json.dumps(h)
-        }).execute()
-    except:
-        pass
-
-# =====================
-# SAFE SPLIT
-# =====================
-
-def safe_split(text, parts):
-    try:
-        data = text.split("|")
-        if len(data) != parts:
-            return None
-        return data
-    except:
+def get_client(pid):
+    p = providers_cache.get(pid)
+    if not p:
         return None
 
+    return OpenAI(
+        base_url=p["base_url"],
+        api_key=p["api_key"]
+    )
+
 # =====================
-# AI FUNCTION
+# AI ENGINE
 # =====================
 
 async def ask_ai(uid, text):
 
     try:
-        history = get_history(uid)
+        pid = user_provider.get(uid)
+        mid = user_model.get(uid)
 
-        model = user_model.get(uid)
+        provider = providers_cache.get(pid)
+        model = None
 
-        if not model and MODEL_MAP:
-            model = list(MODEL_MAP.values())[0]["model"]
+        if pid in models_cache:
+            for m in models_cache[pid]:
+                if m["id"] == mid:
+                    model = m
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": text})
+        if not provider or not model:
+            return "❌ Provider/Model not selected"
+
+        client = get_client(pid)
 
         loop = asyncio.get_event_loop()
 
         res = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model=model,
-                messages=messages
+                model=model["model_id"],
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": text}
+                ]
             )
         )
 
-        reply = res.choices[0].message.content
+        return res.choices[0].message.content
 
-        history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": reply})
+    except Exception as e:
+        logging.error(e)
+        return "❌ Error"
 
-        save_history(uid, history)
+# =====================
+# ADMIN PANEL
+# =====================
 
-        return reply
+ADMIN_PANEL = [
+    [InlineKeyboardButton("➕ Provider Wizard", callback_data="wiz_provider")],
+    [InlineKeyboardButton("➕ Model Wizard", callback_data="wiz_model")],
+    [InlineKeyboardButton("🧠 Edit Prompt", callback_data="wiz_prompt")],
+]
 
-    except:
-        return "❌ Error happened"
+BACK_BTN = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("⬅️ Back", callback_data="back")]]
+)
 
 # =====================
 # START
@@ -185,44 +161,17 @@ async def ask_ai(uid, text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    menu = ReplyKeyboardMarkup(
-        [["⚙️ AI Model", "🛠 Admin"]],
-        resize_keyboard=True
-    )
-
     await update.message.reply_text(
-        "🤖 MOJO AI Ready!",
-        reply_markup=menu
-    )
-
-# =====================
-# MODEL UI
-# =====================
-
-async def model_ui(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    load_models()
-
-    buttons = [
-        [InlineKeyboardButton(v["name"], callback_data=f"model_{k}")]
-        for k, v in MODEL_MAP.items()
-    ]
-
-    await update.message.reply_text(
-        "Choose Model:",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        "🤖 AI Platform Ready",
+        reply_markup=ReplyKeyboardMarkup(
+            [["⚙️ Admin Panel"]],
+            resize_keyboard=True
+        )
     )
 
 # =====================
 # ADMIN PANEL
 # =====================
-
-ADMIN_PANEL = [
-    [InlineKeyboardButton("➕ Add Model", callback_data="admin_add")],
-    [InlineKeyboardButton("✏️ Edit Model", callback_data="admin_edit")],
-    [InlineKeyboardButton("❌ Delete Model", callback_data="admin_delete")],
-    [InlineKeyboardButton("🧠 Edit Prompt", callback_data="admin_prompt")]
-]
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -235,7 +184,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =====================
-# CALLBACK
+# WIZARD HANDLER
 # =====================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -245,110 +194,164 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = q.from_user.id
 
-    # MODEL SELECT
-    if q.data.startswith("model_"):
-        key = q.data.replace("model_", "")
-
-        if key in MODEL_MAP:
-            user_model[uid] = MODEL_MAP[key]["model"]
-
-            return await q.edit_message_text(
-                f"✅ {MODEL_MAP[key]['name']}"
-            )
-
-    # ADMIN ONLY
     if uid != ADMIN_ID:
         return
 
-    if q.data == "admin_add":
-        context.user_data["state"] = "add"
-        return await q.edit_message_text("Send: id|name|model")
+    # BACK
+    if q.data == "back":
+        user_step[uid] = None
+        return await q.edit_message_text(
+            "🔙 Admin Panel",
+            reply_markup=InlineKeyboardMarkup(ADMIN_PANEL)
+        )
 
-    if q.data == "admin_edit":
-        context.user_data["state"] = "edit"
-        return await q.edit_message_text("Send: id|name|model")
+    # =====================
+    # PROVIDER WIZARD
+    # =====================
 
-    if q.data == "admin_delete":
-        context.user_data["state"] = "delete"
-        return await q.edit_message_text("Send model id")
+    if q.data == "wiz_provider":
+        user_step[uid] = "p_id"
+        return await q.edit_message_text(
+            "🧠 Step 1: Send Provider ID",
+            reply_markup=BACK_BTN
+        )
 
-    if q.data == "admin_prompt":
-        context.user_data["state"] = "prompt"
-        return await q.edit_message_text("Send new prompt")
+    # =====================
+    # MODEL WIZARD
+    # =====================
+
+    if q.data == "wiz_model":
+        user_step[uid] = "m_pid"
+        return await q.edit_message_text(
+            "🧠 Step 1: Provider ID",
+            reply_markup=BACK_BTN
+        )
+
+    # =====================
+    # PROMPT WIZARD
+    # =====================
+
+    if q.data == "wiz_prompt":
+        user_step[uid] = "prompt"
+        return await q.edit_message_text(
+            "🧠 Send new system prompt",
+            reply_markup=BACK_BTN
+        )
 
 # =====================
-# MESSAGE HANDLER (CRASH FREE)
+# MESSAGE HANDLER (WIZARD FLOW)
 # =====================
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     uid = update.effective_user.id
-    state = context.user_data.get("state")
 
-    # CANCEL
-    if text and text.lower() == "/cancel":
-        context.user_data["state"] = None
-        return await update.message.reply_text("❌ Cancelled")
+    step = user_step.get(uid)
 
-    # ADMIN MODE
-    if uid == ADMIN_ID and state:
+    # CANCEL SAFE
+    if text and text.lower() in ["/cancel", "cancel", "back"]:
+        user_step[uid] = None
+        return await update.message.reply_text("🔙 Cancelled")
 
-        if state == "add":
-            data = safe_split(text, 3)
-            if not data:
-                return await update.message.reply_text("❌ id|name|model")
+    # =====================
+    # PROVIDER WIZARD FLOW
+    # =====================
 
-            mid, name, model = data
+    if uid == ADMIN_ID and step:
 
-            supabase.table("ai_models").insert({
-                "id": mid,
-                "model_name": name,
-                "model_id": model
-            }).execute()
+        try:
 
-            load_models()
-            context.user_data["state"] = None
-            return await update.message.reply_text("✅ Added")
+            # STEP 1
+            if step == "p_id":
+                context.user_data["p_id"] = text
+                user_step[uid] = "p_name"
+                return await update.message.reply_text("Step 2: Provider Name")
 
-        if state == "edit":
-            data = safe_split(text, 3)
-            if not data:
-                return await update.message.reply_text("❌ id|name|model")
+            if step == "p_name":
+                context.user_data["p_name"] = text
+                user_step[uid] = "p_url"
+                return await update.message.reply_text("Step 3: Base URL")
 
-            mid, name, model = data
+            if step == "p_url":
+                context.user_data["p_url"] = text
+                user_step[uid] = "p_key"
+                return await update.message.reply_text("Step 4: API Key")
 
-            supabase.table("ai_models").update({
-                "model_name": name,
-                "model_id": model
-            }).eq("id", mid).execute()
+            if step == "p_key":
 
-            load_models()
-            context.user_data["state"] = None
-            return await update.message.reply_text("✅ Updated")
+                supabase.table("providers").insert({
+                    "id": context.user_data["p_id"],
+                    "name": context.user_data["p_name"],
+                    "base_url": context.user_data["p_url"],
+                    "api_key": text
+                }).execute()
 
-        if state == "delete":
-            supabase.table("ai_models").delete().eq("id", text).execute()
-            load_models()
-            context.user_data["state"] = None
-            return await update.message.reply_text("✅ Deleted")
+                load_providers()
+                user_step[uid] = None
 
-        if state == "prompt":
-            global SYSTEM_PROMPT
-            SYSTEM_PROMPT = text
-            save_prompt(text)
+                return await update.message.reply_text("✅ Provider Added")
 
-            context.user_data["state"] = None
-            return await update.message.reply_text("✅ Prompt Updated")
+            # =====================
+            # MODEL WIZARD
+            # =====================
 
-    # NORMAL BUTTONS
-    if text == "⚙️ AI Model":
-        return await model_ui(update, context)
+            if step == "m_pid":
+                context.user_data["m_pid"] = text
+                user_step[uid] = "m_id"
+                return await update.message.reply_text("Model ID")
 
-    if text == "🛠 Admin":
+            if step == "m_id":
+                context.user_data["m_id"] = text
+                user_step[uid] = "m_name"
+                return await update.message.reply_text("Model Name")
+
+            if step == "m_name":
+                context.user_data["m_name"] = text
+                user_step[uid] = "m_model"
+                return await update.message.reply_text("Model API Name")
+
+            if step == "m_model":
+
+                supabase.table("ai_models").insert({
+                    "provider_id": context.user_data["m_pid"],
+                    "id": context.user_data["m_id"],
+                    "model_name": context.user_data["m_name"],
+                    "model_id": text
+                }).execute()
+
+                load_models()
+                user_step[uid] = None
+
+                return await update.message.reply_text("✅ Model Added")
+
+            # =====================
+            # PROMPT WIZARD
+            # =====================
+
+            if step == "prompt":
+
+                global SYSTEM_PROMPT
+                SYSTEM_PROMPT = text
+                save_prompt(text)
+
+                user_step[uid] = None
+
+                return await update.message.reply_text("✅ Prompt Updated")
+
+        except Exception as e:
+            logging.error(e)
+            user_step[uid] = None
+            return await update.message.reply_text("❌ Error, reset")
+
+    # =====================
+    # NORMAL FLOW
+    # =====================
+
+    if text == "⚙️ Admin Panel":
         return await admin(update, context)
 
-    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    await update.message.reply_text("🤖 Thinking...")
 
     reply = await ask_ai(uid, text)
 
@@ -360,13 +363,13 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
 
-    load_prompt()
+    load_providers()
     load_models()
+    load_prompt()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.add_handler(CallbackQueryHandler(button))
 
@@ -381,6 +384,7 @@ async def main():
 # =====================
 
 if __name__ == "__main__":
+
     threading.Thread(
         target=lambda: HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), BaseHTTPRequestHandler).serve_forever(),
         daemon=True
