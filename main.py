@@ -11,6 +11,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup
 )
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -55,7 +56,7 @@ client = OpenAI(
 )
 
 # =====================
-# PROMPT SYSTEM
+# SYSTEM PROMPT
 # =====================
 
 SYSTEM_PROMPT = "You are MOJO AI assistant."
@@ -70,7 +71,13 @@ def load_prompt():
         pass
 
 def save_prompt(p):
-    supabase.table("bot_config").upsert({"id": 1, "system_prompt": p}).execute()
+    try:
+        supabase.table("bot_config").upsert({
+            "id": 1,
+            "system_prompt": p
+        }).execute()
+    except:
+        pass
 
 # =====================
 # MODEL SYSTEM
@@ -120,40 +127,57 @@ def save_history(uid, h):
         pass
 
 # =====================
+# SAFE SPLIT
+# =====================
+
+def safe_split(text, parts):
+    try:
+        data = text.split("|")
+        if len(data) != parts:
+            return None
+        return data
+    except:
+        return None
+
+# =====================
 # AI FUNCTION
 # =====================
 
 async def ask_ai(uid, text):
 
-    history = get_history(uid)
+    try:
+        history = get_history(uid)
 
-    model = user_model.get(uid)
+        model = user_model.get(uid)
 
-    if not model and MODEL_MAP:
-        model = list(MODEL_MAP.values())[0]["model"]
+        if not model and MODEL_MAP:
+            model = list(MODEL_MAP.values())[0]["model"]
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": text})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": text})
 
-    loop = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
 
-    res = await loop.run_in_executor(
-        None,
-        lambda: client.chat.completions.create(
-            model=model,
-            messages=messages
+        res = await loop.run_in_executor(
+            None,
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=messages
+            )
         )
-    )
 
-    reply = res.choices[0].message.content
+        reply = res.choices[0].message.content
 
-    history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": reply})
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
 
-    save_history(uid, history)
+        save_history(uid, history)
 
-    return reply
+        return reply
+
+    except:
+        return "❌ Error happened"
 
 # =====================
 # START
@@ -161,14 +185,14 @@ async def ask_ai(uid, text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    keyboard = ReplyKeyboardMarkup(
+    menu = ReplyKeyboardMarkup(
         [["⚙️ AI Model", "🛠 Admin"]],
         resize_keyboard=True
     )
 
     await update.message.reply_text(
         "🤖 MOJO AI Ready!",
-        reply_markup=keyboard
+        reply_markup=menu
     )
 
 # =====================
@@ -211,7 +235,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =====================
-# CALLBACK HANDLER
+# CALLBACK
 # =====================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,7 +247,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # MODEL SELECT
     if q.data.startswith("model_"):
-
         key = q.data.replace("model_", "")
 
         if key in MODEL_MAP:
@@ -233,11 +256,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ {MODEL_MAP[key]['name']}"
             )
 
-    # ADMIN CHECK
+    # ADMIN ONLY
     if uid != ADMIN_ID:
         return
 
-    # ADMIN ACTIONS
     if q.data == "admin_add":
         context.user_data["state"] = "add"
         return await q.edit_message_text("Send: id|name|model")
@@ -255,36 +277,52 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Send new prompt")
 
 # =====================
-# MESSAGE HANDLER
+# MESSAGE HANDLER (CRASH FREE)
 # =====================
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     uid = update.effective_user.id
-
     state = context.user_data.get("state")
 
-    # ADMIN INPUT
+    # CANCEL
+    if text and text.lower() == "/cancel":
+        context.user_data["state"] = None
+        return await update.message.reply_text("❌ Cancelled")
+
+    # ADMIN MODE
     if uid == ADMIN_ID and state:
 
         if state == "add":
-            mid, name, model = text.split("|")
+            data = safe_split(text, 3)
+            if not data:
+                return await update.message.reply_text("❌ id|name|model")
+
+            mid, name, model = data
+
             supabase.table("ai_models").insert({
                 "id": mid,
                 "model_name": name,
                 "model_id": model
             }).execute()
+
             load_models()
             context.user_data["state"] = None
             return await update.message.reply_text("✅ Added")
 
         if state == "edit":
-            mid, name, model = text.split("|")
+            data = safe_split(text, 3)
+            if not data:
+                return await update.message.reply_text("❌ id|name|model")
+
+            mid, name, model = data
+
             supabase.table("ai_models").update({
                 "model_name": name,
                 "model_id": model
             }).eq("id", mid).execute()
+
             load_models()
             context.user_data["state"] = None
             return await update.message.reply_text("✅ Updated")
@@ -299,6 +337,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             global SYSTEM_PROMPT
             SYSTEM_PROMPT = text
             save_prompt(text)
+
             context.user_data["state"] = None
             return await update.message.reply_text("✅ Prompt Updated")
 
